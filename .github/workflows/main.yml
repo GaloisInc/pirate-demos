@@ -49,13 +49,14 @@ jobs:
           - name: ubuntu
             container: ubuntu:focal
             packager: apt-get
-            extra-packages: wget ca-certificates libtinfo-dev binutils git cmake make libstdc++-9-dev libedit2 libpython3.8 libssl-dev libjpeg-dev libx11-dev libcpprest-dev
+            extra-packages: wget ca-certificates libtinfo-dev binutils git cmake make libstdc++-9-dev libedit2 libpython3.8 libssl-dev libjpeg-dev libx11-dev libcpprest-dev unzip pkg-config uuid-dev default-jre-headless
             extra-cmake: -DIPV6_TESTS=OFF
             upload-artifact: true
             pirate-llvm: https://pirate.azureedge.net/dist/pirate-llvm/master/pirate-llvm.ubuntu.tgz
           - name: centos7
             container: centos:7
             packager: yum
+            extra-packages: unzip libuuid-devel pkgconfig java-11-openjdk cmake glibc-static wine-devel # for libuuid.a
             extra-cmake: -DIPV6_TESTS=OFF -DOPENSSL_INCLUDE_DIR=/usr/include/openssl11 -DOPENSSL_CRYPTO_LIBRARY=/usr/lib64/libcrypto.so.1.1 -DOPENSSL_SSL_LIBRARY=/usr/lib64/libssl.so.1.1
             upload-artifact: true
             pirate-llvm: https://pirate.azureedge.net/dist/pirate-llvm/master/pirate-llvm.centos.tgz
@@ -84,7 +85,7 @@ jobs:
            ncurses-libs \
            libyaml-devel-0.1.4-11.el7_0.x86_64 \
            openssl11 openssl11-devel \
-           libjpeg-devel libX11-devel
+           libjpeg-devel libX11-devel ${{matrix.extra-packages}}
         # Add links in
         echo "/opt/rh/devtoolset-8/root/bin" >> $GITHUB_PATH
         ln -s /usr/bin/cmake3 /usr/local/bin/cmake
@@ -177,6 +178,53 @@ jobs:
         cmake ${{matrix.extra-cmake}} \
               -DCMAKE_INSTALL_PREFIX=$GITHUB_WORKSPACE/dist/pirate \
               ../libpirategetopt
+        make install
+    - name: Cache antlr4 runtime
+      if: matrix.upload-artifact
+      id: cache-antlr4-runtime
+      uses: actions/cache@v2
+      env:
+        cache-name: cache-antlr4.8-runtime-1
+      with:
+        path: ~/antlr4
+        key: ${{ runner.os }}-build-${{ matrix.name }}-${{ env.cache-name }}
+    - name: Build antlr4 runtime
+      if: matrix.upload-artifact && steps.cache-antlr4-runtime.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p ~/antlr4
+        cd ~/antlr4
+        wget -qO - https://www.antlr.org/download/antlr-4.8-complete.jar > antlr-4.8-complete.jar
+        wget -qO - https://www.antlr.org/download/antlr4-cpp-runtime-4.8-source.zip > antlr4-cpp-runtime-4.8-source.zip
+        unzip antlr4-cpp-runtime-4.8-source.zip
+        mkdir build
+        cd build
+        cmake -DANTLR4_INSTALL=1 -DWITH_LIBCXX=Off ..
+        make
+    - name: Install antlr4 runtime
+      if: matrix.upload-artifact
+      run: |
+        cd ~/antlr4/build
+        make install
+        cd ..
+    - name: Build idl
+      if: matrix.upload-artifact
+      run: |
+        cd antlr
+        mkdir -p build
+        cd build
+        # Link statically so that including in the archive is easy
+        # cmake_exe_linker_flags is set to lib64/wine because that contains libuuid.a which doesn't seem to be found otherwise
+        if test "${{ matrix.name }}" = "ubuntu"; then modpath=/usr/local/lib/cmake/antlr4; else modpath=/usr/local/lib64/cmake/antlr4; fi
+        CFLAGS="-I$GITHUB_WORKSPACE/dist/pirate/include" \
+        LDFLAGS="-L$GITHUB_WORKSPACE/dist/pirate/lib" \
+          cmake -DCMAKE_INSTALL_PREFIX=$GITHUB_WORKSPACE/dist/pirate \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DPIRATE_LINK_STATIC=On \
+              -DCMAKE_EXE_LINKER_FLAGS_RELEASE="-L/usr/lib64/wine" \
+              -DANTLR4_MODULE_PATH=$modpath \
+              -DANTLR4_JAR_LOCATION=$HOME/antlr4/antlr-4.8-complete.jar \
+              -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON \
+              ..
         make install
     # Build lldb-mi so we can include it in archive.
     - name: Build lldb-mi
@@ -287,7 +335,7 @@ jobs:
       run: |
         sudo sed -i 's/azure.archive.ubuntu.com/us.archive.ubuntu.com/g' /etc/apt/sources.list
         sudo apt-get update
-        sudo apt-get install --no-install-recommends -y clang valgrind libyaml-dev uuid-dev default-jre-headless
+        sudo apt-get install --no-install-recommends -y clang valgrind libyaml-dev uuid-dev default-jre-headless pkg-config unzip
     - name: googletest
       run: |
         mkdir ~/googletest
@@ -313,7 +361,7 @@ jobs:
         unzip antlr4-cpp-runtime-4.8-source.zip
         mkdir build
         cd build
-        cmake -D ANTLR4_INSTALL=1 ..
+        cmake -DANTLR4_INSTALL=1 -DWITH_LIBCXX=Off ..
         make
     - name: Install antlr4 runtime
       run: |
